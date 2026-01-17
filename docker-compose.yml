@@ -7,8 +7,6 @@ services:
     restart: unless-stopped
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
-    volumes:
-      - ./downloads:/app/downloads
     networks:
       - bot-network
     mem_limit: 1g
