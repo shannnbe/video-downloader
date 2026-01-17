@@ -64,6 +64,10 @@ async def download_video(url: str, user_id: int) -> tuple[str, str]:
     if 'smule.com' in url.lower():
         return await download_smule_video(url, user_id)
     
+    # Check if it's an Instagram URL and handle separately
+    if 'instagram.com' in url.lower():
+        return await download_instagram_video(url, user_id)
+    
     output_template = os.path.join(DOWNLOADS_DIR, f"{user_id}_%(id)s.%(ext)s")
     
     # yt-dlp options
@@ -152,6 +156,91 @@ def _download_smule_with_ytdlp(url: str, ydl_opts: dict) -> bool:
             return True
     except:
         return False
+
+
+async def download_instagram_video(url: str, user_id: int) -> tuple[str, str]:
+    """
+    Download video from Instagram using snapinsta service.
+    
+    Returns:
+        tuple: (video_path, error_message)
+    """
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        # Extract post ID from URL
+        post_id_match = re.search(r'(?:reel|p)/([A-Za-z0-9_-]+)', url)
+        if not post_id_match:
+            return None, "Invalid Instagram URL format"
+        
+        post_id = post_id_match.group(1)
+        output_path = os.path.join(DOWNLOADS_DIR, f"{user_id}_instagram_{post_id}.mp4")
+        
+        loop = asyncio.get_event_loop()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        
+        # Try snapinsta.app
+        logger.info(f"Trying snapinsta for Instagram: {post_id}")
+        snapinsta_url = f"https://snapinsta.app/api/ajaxSearch"
+        
+        post_data = {
+            'q': url,
+            't': 'media',
+            'lang': 'en'
+        }
+        
+        response = await loop.run_in_executor(
+            None,
+            lambda: requests.post(snapinsta_url, data=post_data, headers=headers, timeout=15)
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Look for video URL in response
+            video_url = None
+            if 'data' in data:
+                html_content = data.get('data', '')
+                # Find download link in HTML
+                video_match = re.search(r'href="([^"]+)"[^>]*download[^>]*>.*?Download', html_content, re.IGNORECASE | re.DOTALL)
+                if video_match:
+                    video_url = video_match.group(1)
+                    logger.info(f"Found Instagram video URL: {video_url[:100]}")
+            
+            if video_url:
+                # Download the video
+                media_response = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                )
+                
+                if media_response.status_code == 200:
+                    downloaded_size = 0
+                    with open(output_path, 'wb') as f:
+                        for chunk in media_response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                
+                                if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                    os.remove(output_path)
+                                    return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                    
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                        logger.info(f"Successfully downloaded Instagram video")
+                        return output_path, None
+        
+        # If snapinsta fails, return error
+        logger.error("Instagram download failed - service unavailable")
+        return None, "Instagram download temporarily unavailable. The post might be private or Instagram is blocking downloads."
+        
+    except Exception as e:
+        logger.error(f"Instagram download error: {str(e)}")
+        _cleanup_partial_downloads(user_id)
+        return None, f"Failed to download from Instagram: {str(e)}"
 
 
 async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
