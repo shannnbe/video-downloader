@@ -192,49 +192,96 @@ async def download_instagram_video(url: str, user_id: int) -> tuple[str, str]:
             'lang': 'en'
         }
         
-        response = await loop.run_in_executor(
-            None,
-            lambda: requests.post(snapinsta_url, data=post_data, headers=headers, timeout=15)
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
+        try:
+            response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(snapinsta_url, data=post_data, headers=headers, timeout=15)
+            )
             
-            # Look for video URL in response
-            video_url = None
-            if 'data' in data:
-                html_content = data.get('data', '')
-                # Find download link in HTML
-                video_match = re.search(r'href="([^"]+)"[^>]*download[^>]*>.*?Download', html_content, re.IGNORECASE | re.DOTALL)
-                if video_match:
-                    video_url = video_match.group(1)
-                    logger.info(f"Found Instagram video URL: {video_url[:100]}")
-            
-            if video_url:
-                # Download the video
-                media_response = await loop.run_in_executor(
-                    None,
-                    lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
-                )
+            if response.status_code == 200:
+                data = response.json()
                 
-                if media_response.status_code == 200:
-                    downloaded_size = 0
-                    with open(output_path, 'wb') as f:
-                        for chunk in media_response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded_size += len(chunk)
-                                
-                                if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                    os.remove(output_path)
-                                    return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                # Look for video URL in response
+                video_url = None
+                if 'data' in data:
+                    html_content = data.get('data', '')
+                    # Find download link in HTML
+                    video_match = re.search(r'href="([^"]+)"[^>]*download[^>]*>.*?Download', html_content, re.IGNORECASE | re.DOTALL)
+                    if video_match:
+                        video_url = video_match.group(1)
+                        logger.info(f"Found Instagram video URL: {video_url[:100]}")
+                
+                if video_url:
+                    # Download the video
+                    media_response = await loop.run_in_executor(
+                        None,
+                        lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                    )
                     
-                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                        logger.info(f"Successfully downloaded Instagram video")
-                        return output_path, None
+                    if media_response.status_code == 200:
+                        downloaded_size = 0
+                        with open(output_path, 'wb') as f:
+                            for chunk in media_response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    
+                                    if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                        os.remove(output_path)
+                                        return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                        
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                            logger.info(f"Successfully downloaded Instagram video")
+                            return output_path, None
+        except Exception as e:
+            logger.warning(f"Snapinsta failed: {str(e)}, trying alternative...")
         
-        # If snapinsta fails, return error
-        logger.error("Instagram download failed - service unavailable")
+        # Try alternative: instadownloader.co
+        logger.info(f"Trying instadownloader.co for Instagram")
+        alt_url = f"https://v3.instadownloader.co/api/ajaxSearch"
+        
+        try:
+            alt_response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(alt_url, data={'q': url, 't': 'media'}, headers=headers, timeout=15)
+            )
+            
+            if alt_response.status_code == 200:
+                alt_data = alt_response.json()
+                
+                if 'data' in alt_data:
+                    html_content = alt_data.get('data', '')
+                    video_match = re.search(r'href="([^"]+)"[^>]*download', html_content, re.IGNORECASE)
+                    if video_match:
+                        video_url = video_match.group(1)
+                        logger.info(f"Found Instagram video URL via alternative: {video_url[:100]}")
+                        
+                        # Download
+                        media_response = await loop.run_in_executor(
+                            None,
+                            lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                        )
+                        
+                        if media_response.status_code == 200:
+                            downloaded_size = 0
+                            with open(output_path, 'wb') as f:
+                                for chunk in media_response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded_size += len(chunk)
+                                        
+                                        if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                            os.remove(output_path)
+                                            return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                            
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                                logger.info(f"Successfully downloaded Instagram video via alternative")
+                                return output_path, None
+        except Exception as e:
+            logger.warning(f"Alternative service failed: {str(e)}")
+        
+        # If both services fail, return error
+        logger.error("Instagram download failed - all services unavailable")
         return None, "Instagram download temporarily unavailable. The post might be private or Instagram is blocking downloads."
         
     except Exception as e:
