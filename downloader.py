@@ -346,27 +346,57 @@ async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
                         logger.info(f"Found media URL (old CDN): {video_url[:100]}")
                         
                 if video_url:
-                    # Download from the CDN URL
-                    media_response = await loop.run_in_executor(
-                        None,
-                        lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT)
-                    )
+                    # Try downloading with retry logic (Smule CDN sometimes blocks first request)
+                    cdn_headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                        'Accept': '*/*',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'Connection': 'keep-alive',
+                        'Referer': 'https://www.smule.com/',
+                        'Origin': 'https://www.smule.com',
+                        'Sec-Fetch-Dest': 'video',
+                        'Sec-Fetch-Mode': 'cors',
+                        'Sec-Fetch-Site': 'cross-site',
+                    }
                     
-                    if media_response.status_code == 200:
-                        downloaded_size = 0
-                        with open(output_path, 'wb') as f:
-                            for chunk in media_response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    
-                                    if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                        os.remove(output_path)
-                                        return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                    # Try up to 3 times with delays
+                    for attempt in range(3):
+                        if attempt > 0:
+                            await asyncio.sleep(1)  # Wait 1 second between attempts
+                            logger.info(f"Retry attempt {attempt + 1} for CDN download")
                         
-                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                            logger.info(f"Successfully downloaded via sownloader")
+                        try:
+                            media_response = await loop.run_in_executor(
+                                None,
+                                lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=cdn_headers)
+                            )
+                            
+                            if media_response.status_code == 200:
+                                downloaded_size = 0
+                                with open(output_path, 'wb') as f:
+                                    for chunk in media_response.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                            downloaded_size += len(chunk)
+                                            
+                                            if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                                os.remove(output_path)
+                                                return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                                
+                                if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                                    logger.info(f"Successfully downloaded via sownloader on attempt {attempt + 1}")
+                                    return output_path, None
+                                else:
+                                    logger.warning(f"Downloaded file is too small or empty on attempt {attempt + 1}")
+                            else:
+                                logger.warning(f"CDN returned status {media_response.status_code} on attempt {attempt + 1}")
+                        except Exception as e:
+                            logger.warning(f"Download attempt {attempt + 1} failed: {str(e)}")
                             return output_path, None
+                        else:
+                            logger.warning(f"Downloaded file is too small or empty")
+                    else:
+                        logger.warning(f"CDN returned status {media_response.status_code} for {video_url[:80]}")
         except Exception as e:
             logger.error(f"Sownloader method failed: {str(e)}")
         
