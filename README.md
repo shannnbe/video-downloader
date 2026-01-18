@@ -33,6 +33,7 @@ docker-compose up -d
 # Check if it's running
 docker-compose logs -f
 ```
+help
 
 ### 3. Start Using
 
