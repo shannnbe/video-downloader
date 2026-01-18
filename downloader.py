@@ -160,7 +160,7 @@ def _download_smule_with_ytdlp(url: str, ydl_opts: dict) -> bool:
 
 async def download_instagram_video(url: str, user_id: int) -> tuple[str, str]:
     """
-    Download video from Instagram using snapinsta service.
+    Download video from Instagram using fastdl.app service.
     
     Returns:
         tuple: (video_path, error_message)
@@ -169,212 +169,90 @@ async def download_instagram_video(url: str, user_id: int) -> tuple[str, str]:
     logger = logging.getLogger(__name__)
     
     try:
-        # Extract post ID from URL
+        # Extract post ID from URL for filename
         post_id_match = re.search(r'(?:reel|p)/([A-Za-z0-9_-]+)', url)
-        if not post_id_match:
-            return None, "Invalid Instagram URL format"
-        
-        post_id = post_id_match.group(1)
+        post_id = post_id_match.group(1) if post_id_match else "instagram"
         output_path = os.path.join(DOWNLOADS_DIR, f"{user_id}_instagram_{post_id}.mp4")
         
         loop = asyncio.get_event_loop()
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json',
         }
         
-        # Try snapinsta.app
-        logger.info(f"Trying snapinsta for Instagram: {post_id}")
-        snapinsta_url = f"https://snapinsta.app/api/ajaxSearch"
+        logger.info(f"Trying fastdl.app for Instagram: {post_id}")
         
-        post_data = {
-            'q': url,
-            't': 'media',
-            'lang': 'en'
-        }
+        # Try fastdl.app API
+        api_url = "https://fastdl.app/api/convert"
         
-        try:
-            response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(snapinsta_url, data=post_data, headers=headers, timeout=15)
+        response = await loop.run_in_executor(
+            None,
+            lambda: requests.post(
+                api_url,
+                json={'url': url},
+                headers=headers,
+                timeout=20
             )
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"Fastdl response: {str(data)[:200]}")
             
-            if response.status_code == 200:
-                data = response.json()
+            # Try to extract video URL from various possible response formats
+            video_url = None
+            
+            # Check common response structures
+            if isinstance(data, dict):
+                # Try direct url field
+                if 'url' in data:
+                    video_url = data['url']
+                elif 'download_url' in data:
+                    video_url = data['download_url']
+                elif 'video_url' in data:
+                    video_url = data['video_url']
+                elif 'data' in data:
+                    if isinstance(data['data'], dict):
+                        video_url = data['data'].get('url') or data['data'].get('download_url')
+                    elif isinstance(data['data'], str):
+                        video_url = data['data']
+                elif 'result' in data:
+                    if isinstance(data['result'], dict):
+                        video_url = data['result'].get('url') or data['result'].get('download_url')
+                    elif isinstance(data['result'], str):
+                        video_url = data['result']
+            
+            if video_url:
+                logger.info(f"Found video URL from fastdl: {video_url[:100]}")
                 
-                # Look for video URL in response
-                video_url = None
-                if 'data' in data:
-                    html_content = data.get('data', '')
-                    # Find download link in HTML
-                    video_match = re.search(r'href="([^"]+)"[^>]*download[^>]*>.*?Download', html_content, re.IGNORECASE | re.DOTALL)
-                    if video_match:
-                        video_url = video_match.group(1)
-                        logger.info(f"Found Instagram video URL: {video_url[:100]}")
+                # Download the video
+                media_response = await loop.run_in_executor(
+                    None,
+                    lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                )
                 
-                if video_url:
-                    # Download the video
-                    media_response = await loop.run_in_executor(
-                        None,
-                        lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
-                    )
+                if media_response.status_code == 200:
+                    downloaded_size = 0
+                    with open(output_path, 'wb') as f:
+                        for chunk in media_response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                downloaded_size += len(chunk)
+                                if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                    os.remove(output_path)
+                                    return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
                     
-                    if media_response.status_code == 200:
-                        downloaded_size = 0
-                        with open(output_path, 'wb') as f:
-                            for chunk in media_response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    
-                                    if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                        os.remove(output_path)
-                                        return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
-                        
-                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                            logger.info(f"Successfully downloaded Instagram video")
-                            return output_path, None
-        except Exception as e:
-            logger.warning(f"Snapinsta failed: {str(e)}, trying alternative...")
+                    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                        logger.info(f"Successfully downloaded via fastdl.app")
+                        return output_path, None
+            else:
+                logger.warning(f"No video URL found in fastdl response")
+        else:
+            logger.warning(f"Fastdl returned status {response.status_code}")
         
-        # Try alternative: instadownloader.co
-        logger.info(f"Trying instadownloader.co for Instagram")
-        alt_url = f"https://v3.instadownloader.co/api/ajaxSearch"
-        
-        try:
-            alt_response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(alt_url, data={'q': url, 't': 'media'}, headers=headers, timeout=15)
-            )
-            
-            if alt_response.status_code == 200:
-                alt_data = alt_response.json()
-                
-                if 'data' in alt_data:
-                    html_content = alt_data.get('data', '')
-                    video_match = re.search(r'href="([^"]+)"[^>]*download', html_content, re.IGNORECASE)
-                    if video_match:
-                        video_url = video_match.group(1)
-                        logger.info(f"Found Instagram video URL via alternative: {video_url[:100]}")
-                        
-                        # Download
-                        media_response = await loop.run_in_executor(
-                            None,
-                            lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
-                        )
-                        
-                        if media_response.status_code == 200:
-                            downloaded_size = 0
-                            with open(output_path, 'wb') as f:
-                                for chunk in media_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                                        downloaded_size += len(chunk)
-                                        
-                                        if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                            os.remove(output_path)
-                                            return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
-                            
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                                logger.info(f"Successfully downloaded Instagram video via alternative")
-                                return output_path, None
-        except Exception as e:
-            logger.warning(f"Alternative service failed: {str(e)}")
-        
-        # Try third alternative: downloadgram.com
-        logger.info(f"Trying downloadgram.com for Instagram")
-        try:
-            downloadgram_url = f"https://downloadgram.org/api/ig"
-            dg_response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(downloadgram_url, data={'url': url}, headers=headers, timeout=15)
-            )
-            
-            if dg_response.status_code == 200:
-                dg_data = dg_response.json()
-                
-                # Look for video URL in different possible response formats
-                video_url = None
-                if isinstance(dg_data, dict):
-                    # Check various possible keys
-                    for key in ['download_url', 'video_url', 'url', 'data']:
-                        if key in dg_data and dg_data[key]:
-                            video_url = dg_data[key]
-                            break
-                
-                if video_url:
-                    logger.info(f"Found Instagram video URL via downloadgram: {video_url[:100]}")
-                    
-                    # Download
-                    media_response = await loop.run_in_executor(
-                        None,
-                        lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
-                    )
-                    
-                    if media_response.status_code == 200:
-                        downloaded_size = 0
-                        with open(output_path, 'wb') as f:
-                            for chunk in media_response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
-                                    downloaded_size += len(chunk)
-                                    
-                                    if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                        os.remove(output_path)
-                                        return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
-                        
-                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                            logger.info(f"Successfully downloaded Instagram video via downloadgram")
-                            return output_path, None
-        except Exception as e:
-            logger.warning(f"Downloadgram service failed: {str(e)}")
-        
-        # Try fourth alternative: savemyvideos.net
-        logger.info(f"Trying savemyvideos.net for Instagram")
-        try:
-            savemyvideos_url = f"https://savemyvideos.net/api/ajaxSearch"
-            smv_response = await loop.run_in_executor(
-                None,
-                lambda: requests.post(savemyvideos_url, data={'q': url, 'lang': 'en'}, headers=headers, timeout=15)
-            )
-            
-            if smv_response.status_code == 200:
-                smv_data = smv_response.json()
-                
-                if smv_data.get('status') == 'ok' and smv_data.get('data'):
-                    html_content = smv_data.get('data', '')
-                    # Look for download link
-                    video_match = re.search(r'href="([^"]+)"[^>]*(?:download|Download)', html_content, re.IGNORECASE)
-                    if video_match:
-                        video_url = video_match.group(1)
-                        logger.info(f"Found Instagram video URL via savemyvideos: {video_url[:100]}")
-                        
-                        # Download
-                        media_response = await loop.run_in_executor(
-                            None,
-                            lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
-                        )
-                        
-                        if media_response.status_code == 200:
-                            downloaded_size = 0
-                            with open(output_path, 'wb') as f:
-                                for chunk in media_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                                        downloaded_size += len(chunk)
-                                        
-                                        if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                                            os.remove(output_path)
-                                            return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
-                            
-                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-                                logger.info(f"Successfully downloaded Instagram video via savemyvideos")
-                                return output_path, None
-        except Exception as e:
-            logger.warning(f"Savemyvideos service failed: {str(e)}")
-        
-        # If all services fail, return error
-        logger.error("Instagram download failed - all services unavailable")
-        return None, "❌ Instagram download isn't working right now. Instagram often blocks downloaders. Try YouTube, TikTok, or Smule instead!"
+        # If fastdl fails, return error
+        _cleanup_partial_downloads(user_id)
+        return None, "Instagram download failed. Please try again later."
         
     except Exception as e:
         logger.error(f"Instagram download error: {str(e)}")
