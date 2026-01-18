@@ -319,7 +319,7 @@ async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
                 
                 if video_match:
                     video_url = video_match.group(1)
-                    logger.info(f"Found video URL: {video_url[:100]}")
+                    logger.info(f"Found video URL (FULL): {video_url}")
                 
                 # Pattern 2: Audio links if no video
                 if not video_url:
@@ -327,7 +327,7 @@ async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
                     audio_match = re.search(audio_pattern, sownloader_html)
                     if audio_match:
                         video_url = audio_match.group(1)
-                        logger.info(f"Found audio URL: {audio_url[:100]}")
+                        logger.info(f"Found audio URL (FULL): {video_url}")
                 
                 # Pattern 3: Look in any context for new smule CDN URLs
                 if not video_url:
@@ -335,7 +335,7 @@ async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
                     generic_match = re.search(generic_pattern, sownloader_html)
                     if generic_match:
                         video_url = generic_match.group(1)
-                        logger.info(f"Found media URL: {video_url[:100]}")
+                        logger.info(f"Found media URL (FULL): {video_url}")
                 
                 # Pattern 4: Try old CDN domain as fallback
                 if not video_url:
@@ -343,7 +343,7 @@ async def download_smule_video(url: str, user_id: int) -> tuple[str, str]:
                     old_match = re.search(old_cdn_pattern, sownloader_html)
                     if old_match:
                         video_url = old_match.group(1)
-                        logger.info(f"Found media URL (old CDN): {video_url[:100]}")
+                        logger.info(f"Found media URL (old CDN FULL): {video_url}")
                         
                 if video_url:
                     # Try downloading with retry logic (Smule CDN sometimes blocks first request)
