@@ -280,9 +280,101 @@ async def download_instagram_video(url: str, user_id: int) -> tuple[str, str]:
         except Exception as e:
             logger.warning(f"Alternative service failed: {str(e)}")
         
-        # If both services fail, return error
+        # Try third alternative: downloadgram.com
+        logger.info(f"Trying downloadgram.com for Instagram")
+        try:
+            downloadgram_url = f"https://downloadgram.org/api/ig"
+            dg_response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(downloadgram_url, data={'url': url}, headers=headers, timeout=15)
+            )
+            
+            if dg_response.status_code == 200:
+                dg_data = dg_response.json()
+                
+                # Look for video URL in different possible response formats
+                video_url = None
+                if isinstance(dg_data, dict):
+                    # Check various possible keys
+                    for key in ['download_url', 'video_url', 'url', 'data']:
+                        if key in dg_data and dg_data[key]:
+                            video_url = dg_data[key]
+                            break
+                
+                if video_url:
+                    logger.info(f"Found Instagram video URL via downloadgram: {video_url[:100]}")
+                    
+                    # Download
+                    media_response = await loop.run_in_executor(
+                        None,
+                        lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                    )
+                    
+                    if media_response.status_code == 200:
+                        downloaded_size = 0
+                        with open(output_path, 'wb') as f:
+                            for chunk in media_response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    
+                                    if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                        os.remove(output_path)
+                                        return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                        
+                        if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                            logger.info(f"Successfully downloaded Instagram video via downloadgram")
+                            return output_path, None
+        except Exception as e:
+            logger.warning(f"Downloadgram service failed: {str(e)}")
+        
+        # Try fourth alternative: savemyvideos.net
+        logger.info(f"Trying savemyvideos.net for Instagram")
+        try:
+            savemyvideos_url = f"https://savemyvideos.net/api/ajaxSearch"
+            smv_response = await loop.run_in_executor(
+                None,
+                lambda: requests.post(savemyvideos_url, data={'q': url, 'lang': 'en'}, headers=headers, timeout=15)
+            )
+            
+            if smv_response.status_code == 200:
+                smv_data = smv_response.json()
+                
+                if smv_data.get('status') == 'ok' and smv_data.get('data'):
+                    html_content = smv_data.get('data', '')
+                    # Look for download link
+                    video_match = re.search(r'href="([^"]+)"[^>]*(?:download|Download)', html_content, re.IGNORECASE)
+                    if video_match:
+                        video_url = video_match.group(1)
+                        logger.info(f"Found Instagram video URL via savemyvideos: {video_url[:100]}")
+                        
+                        # Download
+                        media_response = await loop.run_in_executor(
+                            None,
+                            lambda: requests.get(video_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers)
+                        )
+                        
+                        if media_response.status_code == 200:
+                            downloaded_size = 0
+                            with open(output_path, 'wb') as f:
+                                for chunk in media_response.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                                        downloaded_size += len(chunk)
+                                        
+                                        if downloaded_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+                                            os.remove(output_path)
+                                            return None, f"File too large (over {MAX_FILE_SIZE_MB}MB)"
+                            
+                            if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+                                logger.info(f"Successfully downloaded Instagram video via savemyvideos")
+                                return output_path, None
+        except Exception as e:
+            logger.warning(f"Savemyvideos service failed: {str(e)}")
+        
+        # If all services fail, return error
         logger.error("Instagram download failed - all services unavailable")
-        return None, "Instagram download temporarily unavailable. The post might be private or Instagram is blocking downloads."
+        return None, "❌ Instagram download isn't working right now. Instagram often blocks downloaders. Try YouTube, TikTok, or Smule instead!"
         
     except Exception as e:
         logger.error(f"Instagram download error: {str(e)}")
